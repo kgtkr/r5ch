@@ -1,0 +1,294 @@
+pub fn newThread(params NewThread) (string, error) {
+	bc := NewThreadBbscgi{
+		NewThread: params,
+		cookie:    []string{},
+		submit:    "新規スレッド作成",
+	}
+	r1, err := newThreadBbsCgi(bc)
+	if err != nil {
+		return "", err
+	}
+	defer r1.Body.Close()
+	bc.submit = "上記全てを承諾して書き込む"
+	bc.cookie = r1.Header["Set-Cookie"]
+
+	r2, err := newThreadBbsCgi(bc)
+	if err != nil {
+		return "", err
+	}
+	defer r2.Body.Close()
+
+	body, err := ioutil.ReadAll(transform.NewReader(bufio.NewReader(r2.Body), japanese.ShiftJIS.NewDecoder()))
+	if err != nil {
+		return "", err
+	}
+
+	return string(body), nil
+}
+
+pub fn newThreadBbsCgi(params NewThreadBbscgi) (*http.Response, error) {
+	values := url.Values{
+		"subject": {params.subject},
+		"submit":  {params.submit},
+		"bbs":     {params.board},
+		"time":    {"1"},
+		"FROM":    {params.name},
+		"mail":    {params.mail},
+		"MESSAGE": {params.message},
+	}
+
+	req, err := http.NewRequest("POST", "http://"+params.server+".2ch.net/test/bbs.cgi?guid=ON", strings.NewReader(EncodeSJIS(values)))
+	if err != nil {
+		return nil, err
+	}
+	req.Header = http.Header{
+		"User-Agent":   {getUA()},
+		"Referer":      {"http://" + params.server + ".2ch.net/" + params.board + "/"},
+		"Origin":       {"http://" + params.server + ".2ch.net"},
+		"Content-Type": {"application/x-www-form-urlencoded"},
+		"Cookie":       params.cookie,
+	}
+
+	client := &http.Client{}
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	return resp, nil
+}
+
+pub fn kakikomi(params Kakikomi) (string, error) {
+	bc := KakikomiBbscgi{
+		Kakikomi: params,
+		cookie:   []string{},
+		submit:   "書き込む",
+	}
+	r1, err := kakikomiBbscgi(bc)
+	if err != nil {
+		return "", err
+	}
+	defer r1.Body.Close()
+	bc.submit = "上記全てを承諾して書き込む"
+	bc.cookie = r1.Header["Set-Cookie"]
+
+	r2, err := kakikomiBbscgi(bc)
+	if err != nil {
+		return "", err
+	}
+	defer r2.Body.Close()
+
+	body, err := ioutil.ReadAll(transform.NewReader(bufio.NewReader(r2.Body), japanese.ShiftJIS.NewDecoder()))
+	if err != nil {
+		return "", err
+	}
+
+	return string(body), nil
+}
+
+pub fn  kakikomiBbscgi(params KakikomiBbscgi) (*http.Response, error) {
+	values := url.Values{
+		"bbs":     {params.board},
+		"key":     {params.thread},
+		"time":    {"1"},
+		"submit":  {params.submit},
+		"FROM":    {params.name},
+		"mail":    {params.mail},
+		"MESSAGE": {params.message},
+		"suka":    {"pontan"},
+	}
+
+	req, err := http.NewRequest("POST", "https://"+params.server+".2ch.net/test/bbs.cgi?guid=ON", strings.NewReader(EncodeSJIS(values)))
+	if err != nil {
+		return nil, err
+	}
+
+	req.Header = http.Header{
+		"User-Agent":   {getUA()},
+		"Referer":      {"https://" + params.server + ".2ch.net/test/read.cgi/" + params.board + "/" + params.thread + "/"},
+		"Origin":       {"https://" + params.server + ".2ch.net"},
+		"Content-Type": {"application/x-www-form-urlencoded"},
+		"Cookie":       params.cookie,
+	}
+
+	client := &http.Client{}
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	return resp, nil
+}
+
+pub struct BBS  {
+	cate      string
+	boardName string
+	boardKey  string
+	server    string
+}
+
+pub fn getBBS() ([]BBS, error) {
+	values := url.Values{}
+	req, err := http.NewRequest("GET", "http://menu.2ch.net/bbsmenu.html", strings.NewReader(values.Encode()))
+	if err != nil {
+		return nil, err
+	}
+	req.Header = http.Header{
+		"User-Agent": {getUA()},
+		"Origin":     {"http://menu.2ch.net"},
+	}
+
+	client := &http.Client{}
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	body, err := ioutil.ReadAll(resp.Body)
+	if err != nil {
+		return nil, err
+	}
+	html := string(body)
+
+	bbses := []BBS{}
+	var cate string = ""
+	for _, row := range strings.Split(html, "\n") {
+		cateMatch := regexp.MustCompile(`^<br><br><B>(.+)<\/B><br>$`).FindSubmatch([]byte(row))
+		if cateMatch != nil {
+			cate = string(cateMatch[1])
+		}
+
+		boardMatch := regexp.MustCompile(`^<A HREF=http:\/\/(.+)\.2ch\.net\/(.+)\/>(.+)<\/A><br>$`).FindSubmatch([]byte(row))
+		if boardMatch != nil && cate != "" {
+			bbses = append(bbses, BBS{
+				cate:      cate,
+				boardName: string(boardMatch[3]),
+				boardKey:  string(boardMatch[2]),
+				server:    string(boardMatch[1]),
+			})
+		}
+	}
+
+	return bbses, nil
+
+}
+
+pub struct Thread  {
+	server  string
+	board   string
+	count   int
+	key     int
+	subject string
+}
+
+pub struct ThreadsJSON  {
+	Threads    [][]interface{} `json:"threads"`
+	Thumbnails interface{}     `json:"thumbnails"`
+	TotalCount int             `json:"total_count"`
+}
+
+pub fn  getThreads(bbs *BBS) ([]Thread, error) {
+	values := url.Values{}
+	req, err := http.NewRequest("GET", "http://itest.2ch.net/subbacks/"+bbs.boardKey+".json", strings.NewReader(values.Encode()))
+	if err != nil {
+		return nil, err
+	}
+	req.Header = http.Header{
+		"User-Agent": {getUA()},
+		"Origin":     {"http://menu.2ch.net"},
+	}
+
+	client := &http.Client{}
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	body, err := ioutil.ReadAll(resp.Body)
+	if err != nil {
+		return nil, err
+	}
+
+	var thsJson ThreadsJSON
+	if err := json.Unmarshal(body, &thsJson); err != nil {
+		return nil, err
+	}
+
+	ths := []Thread{}
+	for _, th := range thsJson.Threads {
+		bod := strings.Split(th[3].(string), "/")
+		key, _ := strconv.Atoi(bod[1])
+		ths = append(ths, Thread{
+			server:  bbs.server,
+			board:   bod[0],
+			count:   int(th[1].(float64)),
+			key:     key,
+			subject: th[5].(string),
+		})
+	}
+
+	return ths, nil
+}
+
+pub struct  Res  {
+	no      int
+	date    time.Time
+	id      string
+	mail    string
+	name    string
+	message string
+	be      string
+}
+
+pub struct  ResesJSON {
+	TotalCount int             `json:"total_count"`
+	Thread     []interface{}   `json:"thread"`
+	Comments   [][]interface{} `json:"comments"`
+}
+
+pub fn getReses(thr Thread) ([]Res, error) {
+	values := url.Values{
+		"subdomain": {thr.server},
+		"board":     {thr.board},
+		"dat":       {strconv.Itoa(thr.key)},
+	}
+	req, err := http.NewRequest("GET", "http://itest.2ch.net/public/newapi/client.php", strings.NewReader(values.Encode()))
+	if err != nil {
+		return nil, err
+	}
+	req.Header = http.Header{
+		"User-Agent": {getUA()},
+		"Origin":     {"http://menu.2ch.net"},
+	}
+
+	client := &http.Client{}
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	body, err := ioutil.ReadAll(resp.Body)
+	if err != nil {
+		return nil, err
+	}
+
+	var rsJson ResesJSON
+	if err := json.Unmarshal(body, &rsJson); err != nil {
+		return nil, err
+	}
+
+	rs := []Res{}
+	for _, r := range rsJson.Comments {
+		rs = append(rs, Res{
+			no:      r[0].(int),
+			date:    time.Unix(r[3].(int64), 0),
+			id:      r[4].(string),
+			mail:    r[2].(string),
+			name:    r[1].(string),
+			message: r[6].(string),
+			be:      r[5].(string),
+		})
+	}
+
+	return rs, nil
+}
